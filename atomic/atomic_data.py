@@ -274,7 +274,7 @@ class RateCoefficient(object):
             self.splines.append(RectBivariateSpline(x, y, z))
 
     def __call__(self, k, Te, ne):
-        """Evaulate the ionisation/recombination coefficients of
+        """Evaluate the ionisation/recombination coefficients of
         k'th atomic state at a given temperature and density.
 
         Args:
@@ -290,8 +290,9 @@ class RateCoefficient(object):
         return np.power(10, c)
 
     def log10(self, k, Te, ne):
-        """Evaulate the logarithm of ionisation/recombination coefficients of
-        k'th atomic state at a given temperature and density.
+        """Evaluate the logarithm of ionisation/recombination coefficients of
+        k'th atomic state at a given temperature and density, extrapolating
+        linearly if necessary.
 
         If asked to evaluate for Te = np.array([1,2,3])
             and ne = np.array([a,b,c]),
@@ -299,6 +300,10 @@ class RateCoefficient(object):
             not a 3x3 matrix of all the grid points.
             I'm not sure yet if __call__ is typically
             done with 1D or 2D arrays.
+
+        If asked to evaluate a value outside of the domain
+            the closest value on the domain border is selected and 
+            linearly extrapolated with the local derivatives
 
         Args:
             k (int): Ionising or recombined ion stage.
@@ -310,11 +315,31 @@ class RateCoefficient(object):
             c (array_like): log10(rate coefficent in [m3/s])
         """
 
+        bbox = [self.splines[k].tck[0][0], self.splines[k].tck[0][-1],
+                self.splines[k].tck[1][0], self.splines[k].tck[1][-1]] # [Tmin, Tmax, nmin, nmax]
+
         Te, ne = np.broadcast_arrays(Te, ne)
         log_temperature = np.log10(Te)
         log_density = np.log10(ne)
+        log_temperature_base = np.clip(log_temperature, bbox[0], bbox[1])
+        log_density_base = np.clip(log_density, bbox[2], bbox[3])
 
-        c = self.splines[k](log_temperature, log_density, grid=False)
+        out_domain_x = np.logical_or(log_temperature <= bbox[0], log_temperature >= bbox[1])
+        out_domain_y = np.logical_or(log_density <= bbox[2], log_density >= bbox[3])
+
+        # Calculate at the base positions (in the domain)
+        c = self.splines[k](log_temperature_base, log_density_base, grid=False)
+        # Calculate derivatives at base points
+        dx = self.splines[k](log_temperature_base[out_domain_x],
+                             log_density_base[out_domain_x],
+                             dx=1, dy=0, grid=False)
+        dy = self.splines[k](log_temperature_base[out_domain_y],
+                             log_density_base[out_domain_y],
+                             dx=0, dy=1, grid=False)
+        # Linearly extrapolate from base positions if out_domain
+        # Add a limiter to prevent gigantic values
+        c[out_domain_x] += np.clip(dx*(log_temperature[out_domain_x] - log_temperature_base[out_domain_x]), -99, 10)
+        c[out_domain_y] += np.clip(dy*(log_density[out_domain_y] - log_density_base[out_domain_y]), -99, 10)
         return c
 
     @property
